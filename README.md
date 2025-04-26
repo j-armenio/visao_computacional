@@ -1,5 +1,5 @@
 # Como usar
-Para instalar as depêndencias e ativar o ambiente virtual:
+Para instalar as dependências e ativar o ambiente virtual:
 ```bash
 python3 -m venv .penv
 source .penv/bin/activate
@@ -8,7 +8,7 @@ pip install -r requirements.txt
 ```
 
 ## Padronizar as imagens
-Após instalar as depêndencias
+Após instalar as dependências
 ```bash
 python3 padronizar.py
 ```
