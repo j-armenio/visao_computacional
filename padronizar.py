@@ -1,6 +1,9 @@
 import cv2
 import os
 import numpy as np
+import glob
+
+TARGET_SIZE = 512
 
 def resize_and_crop(img, target_size=512):
     """
@@ -38,36 +41,76 @@ def resize_and_crop(img, target_size=512):
     
     return cropped
 
-def process_images(input_folder, output_folder, target_size=512):
+def remove_black_borders(img):
     """
-    Processa todas as imagens de uma pasta
+    Retira as linhas pretas (parte superior e inferior) que o IPhone colocar nas fotos
     """
-    if not os.path.exists(output_folder):
-        os.makedirs(output_folder)
+    # Converter para escala de cinza
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     
-    for filename in os.listdir(input_folder):
-        if filename.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.tiff')):
-            input_path = os.path.join(input_folder, filename)
-            output_path = os.path.join(output_folder, filename)
-            
-            img = cv2.imread(input_path)
-            if img is None:
-                print(f"Erro ao carregar: {filename}")
-                continue
-            
-            processed_img = resize_and_crop(img, target_size)
-            
-            # Garante que o resultado é 512x512
-            assert processed_img.shape[0] == target_size and processed_img.shape[1] == target_size, \
-                   f"Imagem {filename} não está 512x512! Tem {processed_img.shape}"
-            
-            cv2.imwrite(output_path, processed_img)
-            print(f"Processado: {filename} -> {processed_img.shape}")
+    # Encontrar a primeira linha não-preta a partir do topo
+    h, w = gray.shape
+    top = 0
+    bottom = h - 1
+    
+    # Threshold para considerar como "preto" (ajuste conforme necessário)
+    threshold = 10
+    
+    # Verificar do topo para baixo
+    for i in range(h):
+        if np.mean(gray[i, :]) > threshold:
+            top = i
+            break
+    
+    # Verificar do topo + 1 até próxima linha preta
+    for i in range(top+1, h):
+        if np.mean(gray[i, :]) <= threshold:
+            bottom = i
+            break
+    
+    # Recortar a imagem
+    cropped_img = img[top:bottom+1, :]
+    
+    return cropped_img
+
+def process_images(input_dir, output_dir):
+    # Criar diretório de saída se não existir
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+    
+    # Processar cada imagem no diretório
+    # image_extensions = ['*.jpg', '*.jpeg', '*.png', '*.bmp']
+    image_extensions = ['foto_*.jpg']
+    all_images = []
+    for ext in image_extensions:
+        all_images.extend(glob.glob(os.path.join(input_dir, ext)))
+        all_images.extend(glob.glob(os.path.join(input_dir, ext.upper())))
+    
+    for img_path in all_images:
+        # Gerar nome do arquivo de saída
+        filename = os.path.basename(img_path)
+        output_path = os.path.join(output_dir, filename)
+        
+        # Processar a imagem
+        img = cv2.imread(img_path)
+        if img is None:
+            print(f"Erro ao carregar: {filename}")
+            continue
+        
+        # Passa pelas tranformações
+        img = remove_black_borders(img)
+        img = resize_and_crop(img, TARGET_SIZE)
+        
+        # Garante que o resultado é 512x512
+        assert img.shape[0] == TARGET_SIZE and img.shape[1] == TARGET_SIZE, \
+                f"Imagem {filename} não está 512x512! Tem {img.shape}"
+        
+        cv2.imwrite(output_path, img)
+        print(f"Processado: {filename} -> {img.shape}")
 
 if __name__ == "__main__":
     INPUT_FOLDER = "input_images"
     OUTPUT_FOLDER = "output_images"
-    TARGET_SIZE = 512
     
-    process_images(INPUT_FOLDER, OUTPUT_FOLDER, TARGET_SIZE)
+    process_images(INPUT_FOLDER, OUTPUT_FOLDER)
     print("Processamento concluído! Verifique as imagens em", OUTPUT_FOLDER)
