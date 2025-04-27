@@ -3,7 +3,7 @@ import os
 import numpy as np
 import glob
 
-TARGET_SIZE = 512
+TARGET_SIZE = 1024
 
 def resize_and_crop(img, target_size=512):
     """
@@ -80,7 +80,7 @@ def process_images(input_dir, output_dir):
     
     # Processar cada imagem no diretório
     # image_extensions = ['*.jpg', '*.jpeg', '*.png', '*.bmp']
-    image_extensions = ['foto_*.jpg']
+    image_extensions = ['foto_*.jpg', 'foto_*.png']
     all_images = []
     for ext in image_extensions:
         all_images.extend(glob.glob(os.path.join(input_dir, ext)))
@@ -110,7 +110,7 @@ def process_images(input_dir, output_dir):
 
 if __name__ == "__main__":
     INPUT_FOLDER = "input_images"
-    OUTPUT_FOLDER = "output_images"
+    OUTPUT_FOLDER = "cropped_images"
     
     process_images(INPUT_FOLDER, OUTPUT_FOLDER)
     print("Processamento concluído! Verifique as imagens em", OUTPUT_FOLDER)
