@@ -3,6 +3,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 import os
 from matplotlib.colors import ListedColormap
+from sklearn.cluster import KMeans
+from sklearn.decomposition import PCA
+from sklearn.preprocessing import StandardScaler
 import glob
 import random
 
@@ -27,16 +30,19 @@ def criar_filtro_gabor(ksize=31, sigma=4.0, theta=0, lambd=10.0, gamma=0.5, psi=
         (ksize, ksize), sigma, theta, lambd, gamma, psi, ktype=cv2.CV_32F
     )
     # Normaliza o kernel
-    kernel /= 1.5 * kernel.sum()
+    if kernel.sum() != 0:
+        kernel /= 1.5 * kernel.sum()
+    else:
+        kernel /= kernel.max()
     return kernel
 
-def aplicar_filtros_gabor(imagem, filtros):
+def aplicar_filtros(imagem, filtros):
     """
-    Aplica uma lista de filtros de Gabor à imagem.
+    Aplica uma lista de filtros à imagem.
     
     Parâmetros:
     - imagem: imagem em escala de cinza
-    - filtros: lista de filtros de Gabor
+    - filtros: lista de filtros
     
     Retorna:
     - Lista de respostas dos filtros
@@ -46,43 +52,51 @@ def aplicar_filtros_gabor(imagem, filtros):
     for kernel in filtros:
         # Aplica o filtro usando convolução
         resposta = cv2.filter2D(imagem, cv2.CV_32F, kernel)
-        # Calcula a magnitude da resposta (valor absoluto)
-        # resposta = np.abs(resposta)
         respostas.append(resposta)
         
     return respostas
 
-def criar_banco_filtros():
+def criar_banco_filtros(ksize=31):
     """
-    Cria um banco de filtros de Gabor com diferentes orientações.
+    Cria um banco de filtros de Gabor (com diferentes orientações), Gausseanos e Laplacianos.
     
     Retorna:
-    - Lista de filtros de Gabor para diferentes orientações
+    - Lista de filtros
     """
     filtros = []
     
     # Parâmetros para os filtros de Gabor
-    ksize = 31
     sigma = 4.0
     lambd = 10.0
     gamma = 0.5
-    psi = 0
+    psi = [0, np.pi/2]
+    # theta = [0, np.pi/2, np.pi/4, 3*np.pi/4]
+    k = 5
+    theta = [i * np.pi / k for i in range(k)]
+
+    for p in psi:
+        for t in theta:
+            filtros.append(criar_filtro_gabor(ksize, sigma, theta=t, lambd=lambd, gamma=gamma, psi=p))
+
+        # Filtro "Circular" (combinação de filtros com diferentes orientações)
+        # Para simular um padrão circular, usamos um filtro com lambda menor
+        # filtros.append(criar_filtro_gabor(ksize, sigma, theta=theta[0], lambd=lambd/2, gamma=gamma, psi=p))
     
-    # Filtro Horizontal (0°)
-    filtros.append(criar_filtro_gabor(ksize, sigma, theta=0, lambd=lambd, gamma=gamma, psi=psi))
-    
-    # Filtro Vertical (90°)
-    filtros.append(criar_filtro_gabor(ksize, sigma, theta=np.pi/2, lambd=lambd, gamma=gamma, psi=psi))
-    
-    # Filtro Diagonal (45°)
-    filtros.append(criar_filtro_gabor(ksize, sigma, theta=np.pi/4, lambd=lambd, gamma=gamma, psi=psi))
-    
-    # Filtro Diagonal (135°)
-    filtros.append(criar_filtro_gabor(ksize, sigma, theta=3*np.pi/4, lambd=lambd, gamma=gamma, psi=psi))
-    
-    # Filtro "Circular" (combinação de filtros com diferentes orientações)
-    # Para simular um padrão circular, usamos um filtro com lambda menor
-    filtros.append(criar_filtro_gabor(ksize, sigma, theta=0, lambd=lambd/2, gamma=gamma, psi=psi))
+    kx = cv2.getDerivKernels(2, 0, ksize)  # Segunda derivada em x (ordem=2)
+    ky = cv2.getDerivKernels(0, 2, ksize)  # Segunda derivada em y (ordem=2)
+
+    # getDerivKernels retorna uma tupla de dois arrays 1D
+    # Precisamos calcular o produto externo para obter o kernel 2D
+    kernel_dx2 = np.outer(kx[0], kx[1])
+    kernel_dy2 = np.outer(ky[0], ky[1])
+
+    # O Laplaciano é a soma das derivadas segundas
+    filtros.append(kernel_dx2 + kernel_dy2)
+
+    # getGaussianKernel retorna um array 1D
+    # Precisamos gerar o gaussiano apartir da multiplicação de arrays para ter uma matriz gausseana
+    kernel_gauss = cv2.getGaussianKernel(ksize, sigma)
+    filtros.append(kernel_gauss * kernel_gauss.T)
     
     return filtros
 
@@ -120,12 +134,11 @@ def extrair_caracteristicas_textura(resposta_filtro, tamanho_janela=5):
     # Cria o kernel para cálculo da média local
     kernel = np.ones((tamanho_janela, tamanho_janela), np.float32) / (tamanho_janela * tamanho_janela)
     
-    # Calcula a média local usando convolução
     media = cv2.filter2D(resposta_filtro, -1, kernel)
     
     return media
 
-def processar_imagem(caminho_imagem, visualizar=False):
+def processar_imagem(caminho_imagem, visualizar=False, tamanho_janela=5, niveis=3):
     """
     Processa uma imagem aplicando filtros de Gabor em múltiplas escalas.
     
@@ -144,7 +157,7 @@ def processar_imagem(caminho_imagem, visualizar=False):
     imagem_cinza = cv2.cvtColor(imagem_rgb, cv2.COLOR_RGB2GRAY)
     
     # Cria a pirâmide gaussiana
-    piramide = criar_piramide_gaussiana(imagem_cinza, niveis=3)
+    piramide = criar_piramide_gaussiana(imagem_cinza, niveis)
     
     # Cria o banco de filtros de Gabor
     filtros = criar_banco_filtros()
@@ -155,17 +168,16 @@ def processar_imagem(caminho_imagem, visualizar=False):
     # Processa cada escala
     for idx_escala, imagem_escala in enumerate(piramide):
         # Aplica os filtros de Gabor
-        respostas_filtros = aplicar_filtros_gabor(imagem_escala, filtros)
+        respostas_filtros = aplicar_filtros(imagem_escala, filtros)
         
         # Extrai características de textura
         caracteristicas_escala = []
         for resposta in respostas_filtros:
             # Extrai a média local como característica
-            media = extrair_caracteristicas_textura(resposta)
+            media = extrair_caracteristicas_textura(resposta, tamanho_janela)
             
             # Redimensiona a característica para o tamanho da imagem original
             if idx_escala > 0:
-                fator_escala = 2 ** idx_escala
                 media = cv2.resize(media, (imagem_cinza.shape[1], imagem_cinza.shape[0]))
             
             caracteristicas_escala.append(media)
@@ -202,6 +214,35 @@ def processar_imagem(caminho_imagem, visualizar=False):
     
     return imagem_rgb, tensor_caracteristicas
 
+def processar_conjunto_imagens(arquivos_imagem, n_clusters=5):
+    """
+    Processa um conjunto de imagens realizando a segmentação por textura.
+    
+    Parâmetros:
+    - pasta_imagens: caminho para a pasta com as imagens
+    - n_clusters: número de clusters para segmentação
+    """
+    resultados = []
+    
+    # Processa cada imagem
+    for caminho_imagem in arquivos_imagem:
+        # Extrai o nome base do arquivo
+        nome_arquivo = os.path.basename(caminho_imagem)
+        
+        print(f"Processando: {nome_arquivo}")
+        
+        # Processa a imagem
+        imagem_rgb, tensor_caracteristicas = processar_imagem(caminho_imagem)
+        
+        # Segmenta a imagem
+        rotulos = segmentar_textura_kmeans(tensor_caracteristicas, n_clusters=n_clusters)
+        # rotulos = segmentar_textura_distancia_euclidiana(tensor_caracteristicas, n_clusters=n_clusters)
+        
+        # Armazena os resultados
+        resultados.append((nome_arquivo, imagem_rgb, rotulos))
+    
+    return resultados
+
 def visualizar_segmentacao(imagem_rgb, rotulos, titulo="Segmentação por Textura"):
     """
     Visualiza o resultado da segmentação.
@@ -235,42 +276,6 @@ def visualizar_segmentacao(imagem_rgb, rotulos, titulo="Segmentação por Textur
     plt.show()
     
     return plt
-
-def processar_conjunto_imagens(pasta_imagens, n_clusters=5):
-    """
-    Processa um conjunto de imagens realizando a segmentação por textura.
-    
-    Parâmetros:
-    - pasta_imagens: caminho para a pasta com as imagens
-    - n_clusters: número de clusters para segmentação
-    """
-    # Lista todos os arquivos de imagem na pasta
-    # 
-    extensoes = ['foto_28.jpg', 'foto_29.png', 'foto_30.png']
-    arquivos_imagem = []
-    
-    for ext in extensoes:
-        arquivos_imagem.extend(glob.glob(os.path.join(pasta_imagens, ext)))
-    
-    resultados = []
-    
-    # Processa cada imagem
-    for caminho_imagem in arquivos_imagem:
-        # Extrai o nome base do arquivo
-        nome_arquivo = os.path.basename(caminho_imagem)
-        
-        print(f"Processando: {nome_arquivo}")
-        
-        # Processa a imagem
-        imagem_rgb, tensor_caracteristicas = processar_imagem(caminho_imagem)
-        
-        # Segmenta a imagem
-        rotulos = agrupar_por_distancia_euclidiana(tensor_caracteristicas, n_clusters=n_clusters)
-        
-        # Armazena os resultados
-        resultados.append((nome_arquivo, imagem_rgb, rotulos))
-    
-    return resultados
 
 def exibir_resultados(resultados, n_cols=4):
     """
@@ -306,7 +311,69 @@ def exibir_resultados(resultados, n_cols=4):
     plt.tight_layout()
     plt.show()
 
-def agrupar_por_distancia_euclidiana(tensor_caracteristicas, n_clusters=5, max_iter=10):
+def salvar_resultados(output_path, resultados):
+    if not os.path.exists(output_path):
+        os.makedirs(output_path)
+
+    plt.figure(figsize=(15, 10))
+    for nome_arquivo, imagem_rgb, rotulos in resultados:
+        n_clusters = len(np.unique(rotulos))
+        cores = np.random.RandomState(42).rand(n_clusters, 3)
+        print(cores)
+
+        mapa_cores = ListedColormap(cores)
+
+        # Exibe a imagem original
+        plt.subplot(1, 2, 1)
+        plt.imshow(imagem_rgb)
+        plt.title(f"Original: {nome_arquivo}")
+        plt.axis('off')
+        
+        # Exibe a segmentação
+        plt.subplot(1, 2, 2)
+        plt.imshow(rotulos, cmap=mapa_cores)
+        plt.title(f"Segmentação: {n_clusters} clusters")
+        plt.axis('off')
+
+        plt.savefig(os.path.join(output_path, nome_arquivo))
+    plt.close()
+
+def segmentar_textura_kmeans(tensor_caracteristicas, n_clusters=5, random_state=56):
+    """
+    Segmenta a imagem com base nas características de textura usando K-means.
+    
+    Parâmetros:
+    - tensor_caracteristicas: tensor com as características de textura
+    - n_clusters: número de clusters para o K-means
+    - random_state: semente para reprodução dos resultados
+    
+    Retorna:
+    - Matriz com os rótulos de segmentação
+    """
+    # Obtém as dimensões do tensor
+    altura, largura, n_caracteristicas = tensor_caracteristicas.shape
+    
+    # Reorganiza o tensor para uma matriz 2D: (altura*largura, n_características)
+    X = tensor_caracteristicas.reshape(-1, n_caracteristicas)
+    
+    # Normaliza as características
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+    
+    # Reduz a dimensionalidade com PCA para melhorar a eficiência
+    pca = PCA(n_components=min(10, n_caracteristicas))
+    X_pca = pca.fit_transform(X_scaled)
+    
+    # Aplica o algoritmo K-means
+    kmeans = KMeans(n_clusters=n_clusters, random_state=random_state)
+    rotulos = kmeans.fit_predict(X_pca)
+    
+    # Reorganiza os rótulos para o formato original da imagem
+    rotulos_imagem = rotulos.reshape(altura, largura)
+    
+    return rotulos_imagem
+
+def segmentar_textura_distancia_euclidiana(tensor_caracteristicas, n_clusters=5, max_iter=10):
     """
     Agrupa os pixels da imagem com base na distância euclidiana entre seus vetores de características.
     
@@ -371,30 +438,53 @@ def agrupar_por_distancia_euclidiana(tensor_caracteristicas, n_clusters=5, max_i
 def main():
     # Verifica se a pasta de imagens existe, caso contrário, cria
     pasta_imagens = "./cropped_images"
+    pasta_segmentados = "./segmentados"
+
+    # Numero maximo de imagens para serem processadas
+    maximo_imagens = 16
     
     # Define o número de clusters para segmentação
     n_clusters = 2
     
     # Processa o conjunto de imagens
-    resultados = processar_conjunto_imagens(pasta_imagens, n_clusters=n_clusters)
+    extensoes = ['agarras*']
+    arquivos_imagem = []
+    salvar = True
     
-    # Exibe os resultados
-    if resultados:
-        exibir_resultados(resultados)
-    else:
-        print("Nenhuma imagem encontrada na pasta. Por favor, adicione imagens.")
+    for ext in extensoes:
+        arquivos_imagem.extend(glob.glob(os.path.join(pasta_imagens, ext)))
+
+    if len(arquivos_imagem) <= 0:
+        print(f"Nenhuma imagem encontrada para ser processada em '{pasta_imagens}'.")
+
+    resultados = processar_conjunto_imagens(arquivos_imagem[:min(maximo_imagens, len(arquivos_imagem))], n_clusters=n_clusters)
+
+    if salvar:
+        salvar_resultados(pasta_segmentados, resultados)
+    exibir_resultados(resultados)
 
 # Exemplo de uso com uma única imagem
 def exemplo_unica_imagem(caminho_imagem, n_clusters=5):
     # Processa a imagem
     imagem_rgb, tensor_caracteristicas = processar_imagem(caminho_imagem, visualizar=True)
+
+    print("Segmentando usando K-Means...")
+    rotulos3 = segmentar_textura_kmeans(tensor_caracteristicas, n_clusters=n_clusters)
+    visualizar_segmentacao(imagem_rgb, rotulos3, titulo=f"Segmentação por K-Means ({n_clusters} clusters)")
+
+    rotulos_imagem = np.uint8(255 * rotulos3 / np.max(rotulos3))
+    
+    # Salvar a imagem segmentada com extensão
+    caminho_saida = "imagem_segmentada.png"
+    cv2.imwrite(caminho_saida, rotulos_imagem)
+    print(f"Imagem segmentada salva como {caminho_saida}")
    
-    print("Segmentando usando distância euclidiana...")
-    rotulos3 = agrupar_por_distancia_euclidiana(tensor_caracteristicas, n_clusters=n_clusters)
-    visualizar_segmentacao(imagem_rgb, rotulos3, titulo=f"Segmentação por Distância Euclidiana ({n_clusters} clusters)")
+    # print("Segmentando usando distância euclidiana...")
+    # rotulos3 = segmentar_textura_distancia_euclidiana(tensor_caracteristicas, n_clusters=n_clusters)
+    # visualizar_segmentacao(imagem_rgb, rotulos3, titulo=f"Segmentação por Distância Euclidiana ({n_clusters} clusters)")
 
 if __name__ == "__main__":
-    # main()
+    main()
     
     # Descomente a linha abaixo para testar com uma única imagem específica
-    exemplo_unica_imagem("output_images/foto_29.png", n_clusters=3)
+    # exemplo_unica_imagem("input_images/ginasio_3.jpg", n_clusters=3)
