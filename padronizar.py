@@ -3,7 +3,7 @@ import os
 import numpy as np
 import glob
 
-TARGET_SIZE = 1024
+TARGET_SIZE = 512
 
 def resize_and_crop(img, target_size=512):
     """
@@ -41,38 +41,6 @@ def resize_and_crop(img, target_size=512):
     
     return cropped
 
-def remove_black_borders(img):
-    """
-    Retira as linhas pretas (parte superior e inferior) que o IPhone colocar nas fotos
-    """
-    # Converter para escala de cinza
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    
-    # Encontrar a primeira linha não-preta a partir do topo
-    h, w = gray.shape
-    top = 0
-    bottom = h - 1
-    
-    # Threshold para considerar como "preto" (ajuste conforme necessário)
-    threshold = 10
-    
-    # Verificar do topo para baixo
-    for i in range(h):
-        if np.mean(gray[i, :]) > threshold:
-            top = i
-            break
-    
-    # Verificar do topo + 1 até próxima linha preta
-    for i in range(top+1, h):
-        if np.mean(gray[i, :]) <= threshold:
-            bottom = i
-            break
-    
-    # Recortar a imagem
-    cropped_img = img[top:bottom+1, :]
-    
-    return cropped_img
-
 def process_images(input_dir, output_dir):
     # Criar diretório de saída se não existir
     if not os.path.exists(output_dir):
@@ -80,7 +48,7 @@ def process_images(input_dir, output_dir):
     
     # Processar cada imagem no diretório
     # image_extensions = ['*.jpg', '*.jpeg', '*.png', '*.bmp']
-    image_extensions = ['foto_*.jpg', 'foto_*.png']
+    image_extensions = ['agarras*.jpg', 'agarras*.png']
     all_images = []
     for ext in image_extensions:
         all_images.extend(glob.glob(os.path.join(input_dir, ext)))
@@ -98,7 +66,6 @@ def process_images(input_dir, output_dir):
             continue
         
         # Passa pelas tranformações
-        img = remove_black_borders(img)
         img = resize_and_crop(img, TARGET_SIZE)
         
         # Garante que o resultado é 512x512
