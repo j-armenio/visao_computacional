@@ -1,5 +1,6 @@
 import cv2
 import numpy as np
+import os
 
 WINDOW_NAME = 'Selecione 4 pontos'
 
@@ -27,12 +28,22 @@ def main():
             cv2.circle(img, (x,y), 5, (0, 255, 0), -1)
             cv2.imshow(WINDOW_NAME, img)
 
-    img_id = input("\nEscolha uma das imagens disponíveis e clique em 4 pontos:\nIMPORTANTE: clique em ordem horária! (canto superior-esquerdo, canto superior-direito, canto inferior-direito, canto inferior-esquerdo)\n1 - Museu\n2 - Ginásio de escalada\n")
+    print("\nEscolha uma das imagens disponíveis e clique em 4 pontos:")
+    print("IMPORTANTE: clique em ordem horária! (canto superior-esquerdo, canto superior-direito, canto inferior-direito, canto inferior-esquerdo)")
 
-    if (img_id == '1'):
-        img = cv2.imread('museu.jpg')
-    elif (img_id == '2'):
-        img = cv2.imread('escalada.jpeg')
+    IMAGENS_DIR="imagens"
+
+    files = os.listdir(IMAGENS_DIR)
+    for i, file in enumerate(files):
+        print(f"{i} - {file}")
+
+    img_id = int(input())
+
+    if img_id < 0 or img_id >= len(files):
+        print("[ERRO]: Selecione um valor entre 0-{len(files)}")
+        exit(1)
+
+    img = cv2.imread(os.path.join(IMAGENS_DIR, files[img_id]))
 
     clone = img.copy()
 
@@ -78,7 +89,7 @@ def main():
     else:
         resized_W = maxW
         resized_H = maxH
-        
+
     dst = cv2.resize(dst, (resized_W, resized_H), interpolation=cv2.INTER_LINEAR)
 
     cv2.imshow('Resultado', dst)
