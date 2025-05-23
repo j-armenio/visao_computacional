@@ -40,7 +40,7 @@ def main():
     img_id = int(input())
 
     if img_id < 0 or img_id >= len(files):
-        print("[ERRO]: Selecione um valor entre 0-{len(files)}")
+        print("[ERRO]: Selecione um valor entre 0-" + str(len(files)))
         exit(1)
 
     img = cv2.imread(os.path.join(IMAGENS_DIR, files[img_id]))
@@ -52,13 +52,9 @@ def main():
 
     cv2.setMouseCallback(WINDOW_NAME, click_event)
 
-    do_wrap = False
-
     # Espera até que o usuário clique 4 vezes
-    while len(pts) < 4 or not do_wrap:
+    while len(pts) < 4:
         key = cv2.waitKey(1) & 0xFF
-        if key == ord('c'):
-            do_wrap = True
         if cv2.getWindowProperty(WINDOW_NAME, cv2.WND_PROP_VISIBLE) < 1:
             return
         cv2.waitKey(1)
@@ -75,11 +71,11 @@ def main():
     heightB = np.linalg.norm(pts[1] - pts[2])
     maxH = int((heightA + heightB) / 2)
 
-    pts2 = np.array([
+    pts2 = np.array([ 
         [0, 0],           # canto superior-esquerdo
-        [maxW-1, 0],     # canto superior-direito
-        [maxW-1, maxH-1],# canto inferior-direito
-        [0, maxH-1]      # canto inferior-esquerdo
+        [maxW-1, 0],      # canto superior-direito
+        [maxW-1, maxH-1], # canto inferior-direito
+        [0, maxH-1]       # canto inferior-esquerdo
     ], dtype='float32')
 
     # Calcula a matriz de transformação
@@ -97,6 +93,7 @@ def main():
 
     dst = cv2.resize(dst, (resized_W, resized_H), interpolation=cv2.INTER_LINEAR)
 
+    print("Pressione \'s\' caso deseje salvar sua imagem gerada.")
     cv2.imshow('Resultado', dst)
     while True:
         key = cv2.waitKey(1) & 0xFF
