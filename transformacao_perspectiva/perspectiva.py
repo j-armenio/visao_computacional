@@ -52,8 +52,13 @@ def main():
 
     cv2.setMouseCallback(WINDOW_NAME, click_event)
 
+    do_wrap = False
+
     # Espera até que o usuário clique 4 vezes
-    while len(pts) < 4:
+    while len(pts) < 4 or not do_wrap:
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord('c'):
+            do_wrap = True
         if cv2.getWindowProperty(WINDOW_NAME, cv2.WND_PROP_VISIBLE) < 1:
             return
         cv2.waitKey(1)
@@ -95,6 +100,10 @@ def main():
     cv2.imshow('Resultado', dst)
     while True:
         key = cv2.waitKey(1) & 0xFF
+        if key == ord('s'):
+            save_file = f"transformed_{files[img_id]}"
+            print(f"saved to {save_file}")
+            cv2.imwrite(save_file, dst)
         if cv2.getWindowProperty('Resultado', cv2.WND_PROP_VISIBLE) < 1:
             break
 
