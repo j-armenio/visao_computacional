@@ -52,9 +52,13 @@ def main():
 
     cv2.setMouseCallback(WINDOW_NAME, click_event)
 
+    do_wrap = False
+
     # Espera até que o usuário clique 4 vezes
-    while len(pts) < 4:
+    while len(pts) < 4 or not do_wrap:
         key = cv2.waitKey(1) & 0xFF
+        if key == ord('c'):
+            do_wrap = True
         if cv2.getWindowProperty(WINDOW_NAME, cv2.WND_PROP_VISIBLE) < 1:
             return
         cv2.waitKey(1)
@@ -71,7 +75,7 @@ def main():
     heightB = np.linalg.norm(pts[1] - pts[2])
     maxH = int((heightA + heightB) / 2)
 
-    pts2 = np.array([ 
+    pts2 = np.array([
         [0, 0],           # canto superior-esquerdo
         [maxW-1, 0],      # canto superior-direito
         [maxW-1, maxH-1], # canto inferior-direito
