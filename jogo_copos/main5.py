@@ -59,15 +59,48 @@ def get_color_histogram(frame, bbox):
 class KalmanTracker:
     def __init__(self, bbox, track_id, initial_hist):
         self.id = track_id
-        self.kf = KalmanFilter(dim_x=4, dim_z=2)
-        # ... (configuração do Kalman igual à anterior) ...
-        self.kf.F = np.array([[1,0,1,0],[0,1,0,1],[0,0,1,0],[0,0,0,1]])
-        self.kf.H = np.array([[1,0,0,0],[0,1,0,0]])
-        self.kf.R *= 10.
-        self.kf.P[2:,2:] *= 1000.
-        self.kf.Q[2:,2:] *= 0.01
 
-        self.kf.x[:2] = self.bbox_to_centroid(bbox).reshape((2, 1))
+        # Filtro de Kelman
+        self.kf = KalmanFilter(dim_x=4, dim_z=2)
+        # dim_x=4: Estado [x, y, vx, vy] (posição do centroide e velocidade)
+        # dim_z=2: Medição [x, y] (posição do centroide detectado)
+
+        # Matriz de Transição de Estado (F)
+        # Descreve como o estado evolui de t-1 para t sem controle externo
+        # x_t = x_{t-1} + vx_{t-1} * dt
+        # y_t = y_{t-1} + vy_{t-1} * dt
+        # vx_t = vx_{t-1}
+        # vy_t = vy_{t-1}
+        # (assumindo dt=1 frame)
+        self.kf.F = np.array([[1, 0, 1, 0],
+                               [0, 1, 0, 1],
+                               [0, 0, 1, 0],
+                               [0, 0, 0, 1]])
+
+        # Matriz de Medição (H)
+        # Converte o estado para o espaço de medição
+        # Medimos apenas a posição (x, y)
+        self.kf.H = np.array([[1, 0, 0, 0],
+                               [0, 1, 0, 0]])
+
+        # Covariância do Ruído da Medição (R)
+        # Incerteza da nossa detecção (YOLO). Ajustável.
+        self.kf.R[2:, 2:] *= 10.
+        self.kf.R = np.eye(2) * 10
+
+        # Covariância da Incerteza do Estado (P)
+        # Incerteza inicial sobre o estado. Começamos com alta incerteza.
+        self.kf.P[2:, 2:] *= 1000.
+        self.kf.P *= 10.
+
+        # Covariância do Ruído do Processo (Q)
+        # Incerteza no modelo de movimento (ex: aceleração não modelada).
+        self.kf.Q[2:, 2:] *= 0.01
+        self.kf.Q = np.eye(4) * 1
+
+        # Estado inicial (x)
+        # Extrai o centroide do bbox inicial
+        self.kf.x[:2] = self.get_centroid(bbox).reshape((2, 1))
 
         self.bbox = bbox
         self.time_since_update = 0
@@ -77,13 +110,17 @@ class KalmanTracker:
         self.histogram = initial_hist # ### NOVO ###: Armazena a assinatura de cor
         self.lost_age = 0 # ### NOVO ###: Contador para quando o tracker está na lista de perdidos
 
-    # ... (métodos bbox_to_centroid e predict iguais) ...
     @staticmethod
-    def bbox_to_centroid(bbox): return np.array([(bbox[0] + bbox[2]) / 2.0, (bbox[1] + bbox[3]) / 2.0])
+    def bbox_to_centroid(bbox):
+        return np.array([(bbox[0] + bbox[2]) / 2.0, (bbox[1] + bbox[3]) / 2.0])
+
     def predict(self):
-        self.kf.predict(); self.age += 1; self.time_since_update += 1
+        self.kf.predict()
+        self.age += 1
+        self.time_since_update += 1
         predicted_centroid = self.kf.x[:2].flatten()
-        w = self.bbox[2] - self.bbox[0]; h = self.bbox[3] - self.bbox[1]
+        w = self.bbox[2] - self.bbox[0]
+        h = self.bbox[3] - self.bbox[1]
         return np.array([predicted_centroid[0] - w/2, predicted_centroid[1] - h/2, predicted_centroid[0] + w/2, predicted_centroid[1] + h/2])
 
     def update(self, bbox, hist):
@@ -102,7 +139,7 @@ def main():
         print("Erro ao abrir o vídeo")
         exit()
 
-    # --- Definir parâmetros do vídeo de saída ---
+    # Definir parâmetros do vídeo de saída
     fps = cap.get(cv2.CAP_PROP_FPS)
     width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -110,14 +147,17 @@ def main():
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out = cv2.VideoWriter(VIDEO_OUTPUT, fourcc, fps, (width, height))
 
+    # Lista de trackers
     active_trackers = []
-    lost_trackers = [] # ### NOVO ###: Lista para trackers perdidos
-    available_ids = set(range(FIXED_NUM_CUPS)) # Pool de IDs
+    lost_trackers = []
+    # Pool de IDs
+    available_ids = set(range(FIXED_NUM_CUPS))
     colors = [tuple(np.random.randint(0, 255, 3).tolist()) for _ in range(100)]
 
     while cap.isOpened():
         ret, frame = cap.read()
-        if not ret: break
+        if not ret:
+            break
 
         # 1. DETECÇÃO E EXTRAÇÃO DE FEATURES
         results = model(frame, verbose=False)[0]
@@ -218,6 +258,7 @@ def main():
         if cv2.waitKey(1) & 0xFF == ord('q'): break
 
     cap.release()
+    out.release()
     cv2.destroyAllWindows()
 
 if __name__ == "__main__":
