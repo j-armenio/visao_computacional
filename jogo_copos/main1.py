@@ -110,7 +110,6 @@ while cap.isOpened():
 
     # se encontrou a bola, atualiza o histórico e desenha
     if contours:
-        print("APARECEU!!!")
         center_x, center_y = contours[0]['center']
         x, y, w, h = contours[0]['bbox']
         ball_pos = (center_x, center_y)
@@ -131,7 +130,6 @@ while cap.isOpened():
             points = np.array(ball_track_history, dtype=np.int32).reshape((-1, 1, 2))
             cv2.polylines(frame, [points], isClosed=False, color=ball_color, thickness=2)
     else:
-        print("SUMIU!!!")
         # bola não foi detectada -> verifica se está sob algum copo
         if last_ball_pos:
             ball_x, ball_y = last_ball_pos
@@ -143,7 +141,7 @@ while cap.isOpened():
                     # verifica se a bola está proxima
                     dist = np.linalg.norm(np.array((cup_x, cup_y)) - np.array((ball_x, ball_y)))
 
-                    if dist < 40:
+                    if dist < 60:
                         cup_has_ball[display_id] = True
 
     # ===== LÓGICA DE MAPEAMENTO E Re-ID =====
