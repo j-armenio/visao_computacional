@@ -6,8 +6,10 @@ from filterpy.kalman import KalmanFilter
 from collections import deque
 
 # --- PARÂMETROS DE CONFIGURAÇÃO PARA Re-ID ---
-VIDEO_SOURCE = "video1.mp4"
-VIDEO_OUTPUT = f"output_{VIDEO_SOURCE}"
+# VIDEO_SOURCE = "video1.mp4"
+# VIDEO_OUTPUT = f"output_{VIDEO_SOURCE}"
+VIDEO_SOURCE = 0
+VIDEO_OUTPUT = f"output_v5_output.mp4"
 MODEL_PATH = 'yolo11n.pt'
 CONFIDENCE_THRESHOLD = 0.1
 IOU_THRESHOLD = 0.3
@@ -15,7 +17,7 @@ HISTORY_LENGTH = 50
 FIXED_NUM_CUPS = 3
 
 # Parâmetros de ciclo de vida e Re-ID
-MAX_AGE = 15                # Quadros para um tracker ativo ser considerado "perdido"
+MAX_AGE = 5                # Quadros para um tracker ativo ser considerado "perdido"
 MAX_LOST_AGE = 60           # Quadros para um tracker perdido ser permanentemente excluído
 REID_COLOR_THRESHOLD = 0.7  # Limiar de similaridade de histograma (1.0 = idêntico)
 REID_DISTANCE_THRESHOLD = 150 # Distância máxima em pixels para considerar uma re-identificação
@@ -59,11 +61,13 @@ def get_color_histogram(frame, bbox):
 class KalmanTracker:
     def __init__(self, bbox, track_id, initial_hist):
         self.id = track_id
-
-        # Filtro de Kelman
         self.kf = KalmanFilter(dim_x=4, dim_z=2)
-        # dim_x=4: Estado [x, y, vx, vy] (posição do centroide e velocidade)
-        # dim_z=2: Medição [x, y] (posição do centroide detectado)
+        # ... (configuração do Kalman igual à anterior) ...
+        self.kf.F = np.array([[1,0,1,0],[0,1,0,1],[0,0,1,0],[0,0,0,1]])
+        self.kf.H = np.array([[1,0,0,0],[0,1,0,0]])
+        self.kf.R *= 10.
+        self.kf.P[2:,2:] *= 1000.
+        self.kf.Q[2:,2:] *= 0.01
 
         # Matriz de Transição de Estado (F)
         # Descreve como o estado evolui de t-1 para t sem controle externo
@@ -110,17 +114,13 @@ class KalmanTracker:
         self.histogram = initial_hist # ### NOVO ###: Armazena a assinatura de cor
         self.lost_age = 0 # ### NOVO ###: Contador para quando o tracker está na lista de perdidos
 
+    # ... (métodos bbox_to_centroid e predict iguais) ...
     @staticmethod
-    def bbox_to_centroid(bbox):
-        return np.array([(bbox[0] + bbox[2]) / 2.0, (bbox[1] + bbox[3]) / 2.0])
-
+    def bbox_to_centroid(bbox): return np.array([(bbox[0] + bbox[2]) / 2.0, (bbox[1] + bbox[3]) / 2.0])
     def predict(self):
-        self.kf.predict()
-        self.age += 1
-        self.time_since_update += 1
+        self.kf.predict(); self.age += 1; self.time_since_update += 1
         predicted_centroid = self.kf.x[:2].flatten()
-        w = self.bbox[2] - self.bbox[0]
-        h = self.bbox[3] - self.bbox[1]
+        w = self.bbox[2] - self.bbox[0]; h = self.bbox[3] - self.bbox[1]
         return np.array([predicted_centroid[0] - w/2, predicted_centroid[1] - h/2, predicted_centroid[0] + w/2, predicted_centroid[1] + h/2])
 
     def update(self, bbox, hist):
@@ -139,7 +139,7 @@ def main():
         print("Erro ao abrir o vídeo")
         exit()
 
-    # Definir parâmetros do vídeo de saída
+    # --- Definir parâmetros do vídeo de saída ---
     fps = cap.get(cv2.CAP_PROP_FPS)
     width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -147,17 +147,14 @@ def main():
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out = cv2.VideoWriter(VIDEO_OUTPUT, fourcc, fps, (width, height))
 
-    # Lista de trackers
     active_trackers = []
-    lost_trackers = []
-    # Pool de IDs
-    available_ids = set(range(FIXED_NUM_CUPS))
+    lost_trackers = [] # ### NOVO ###: Lista para trackers perdidos
+    available_ids = set(range(FIXED_NUM_CUPS)) # Pool de IDs
     colors = [tuple(np.random.randint(0, 255, 3).tolist()) for _ in range(100)]
 
     while cap.isOpened():
         ret, frame = cap.read()
-        if not ret:
-            break
+        if not ret: break
 
         # 1. DETECÇÃO E EXTRAÇÃO DE FEATURES
         results = model(frame, verbose=False)[0]
@@ -258,7 +255,6 @@ def main():
         if cv2.waitKey(1) & 0xFF == ord('q'): break
 
     cap.release()
-    out.release()
     cv2.destroyAllWindows()
 
 if __name__ == "__main__":
