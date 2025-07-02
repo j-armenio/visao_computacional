@@ -1,14 +1,15 @@
 import cv2
 import numpy as np
+import os
 from ultralytics import YOLO
 from scipy.optimize import linear_sum_assignment
 from filterpy.kalman import KalmanFilter
 from collections import deque
 
 # --- PARÂMETROS DE CONFIGURAÇÃO PARA Re-ID ---
-# VIDEO_SOURCE = "video1.mp4"
+VIDEO_SOURCE = "media/video1-2.mp4"
+WEBCAM_SOURCE = 0
 # VIDEO_OUTPUT = f"output_{VIDEO_SOURCE}"
-VIDEO_SOURCE = 0
 VIDEO_OUTPUT = f"output_v5_output.mp4"
 MODEL_PATH = 'yolo11n.pt'
 CONFIDENCE_THRESHOLD = 0.1
@@ -21,6 +22,24 @@ MAX_AGE = 5                # Quadros para um tracker ativo ser considerado "perd
 MAX_LOST_AGE = 60           # Quadros para um tracker perdido ser permanentemente excluído
 REID_COLOR_THRESHOLD = 0.7  # Limiar de similaridade de histograma (1.0 = idêntico)
 REID_DISTANCE_THRESHOLD = 150 # Distância máxima em pixels para considerar uma re-identificação
+
+# Parâmetros para reconhecer a bola
+LOWER_ORANGE = np.array([10, 160, 150])
+UPPER_ORANGE = np.array([22, 255, 255])
+
+def detect_ball(frame):
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    mask = cv2.inRange(hsv, LOWER_ORANGE, UPPER_ORANGE)
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    if contours:
+        c = max(contours, key=cv2.contourArea)
+        x, y, w, h = cv2.boundingRect(c)
+        if w * h > 10:  # evita ruído
+            cx = x + w // 2
+            cy = y + h // 2
+            return (x, y, x + w, y + h), (cx, cy)
+    return None, None
 
 def iou_batch(bboxes1, bboxes2):
     """Calcula a IoU entre dois conjuntos de bounding boxes."""
@@ -39,7 +58,6 @@ def iou_batch(bboxes1, bboxes2):
     union_area = area1[:, np.newaxis] + area2 - inter_area
     iou = inter_area / (union_area + 1e-6)
     return iou
-
 
 def get_color_histogram(frame, bbox):
     """Calcula o histograma de matiz (Hue) normalizado para a região do bbox."""
@@ -134,7 +152,20 @@ class KalmanTracker:
 
 def main():
     model = YOLO(MODEL_PATH)
-    cap = cv2.VideoCapture(VIDEO_SOURCE)
+
+    opt = input("Selecione fonte do vídeo: \n1 - Câmera em tempo real \n2 - Vídeo gravado\n")
+    if opt == "1":
+        INPUT_VIDEO = WEBCAM_SOURCE
+    elif opt == "2":
+        INPUT_VIDEO = VIDEO_SOURCE
+        if not os.path.exists(INPUT_VIDEO):
+            print("Erro: video nao encontrado")
+            exit(1)
+    else:
+        print("Opção inválida.")
+        exit(1)
+
+    cap = cv2.VideoCapture(INPUT_VIDEO)
     if not cap.isOpened():
         print("Erro ao abrir o vídeo")
         exit()
@@ -152,9 +183,32 @@ def main():
     available_ids = set(range(FIXED_NUM_CUPS)) # Pool de IDs
     colors = [tuple(np.random.randint(0, 255, 3).tolist()) for _ in range(100)]
 
+    ball_track = deque(maxlen=10)
+    ball_missing_counter = 0
+    MAX_MISSING_FRAMES = 8
+    last_ball_bbox = None
+    cup_with_ball_id = None
+
     while cap.isOpened():
         ret, frame = cap.read()
         if not ret: break
+
+        cv2.waitKey(15)
+
+        # SEGMENTAÇÃO DA BOLA
+        ball_bbox, ball_center = detect_ball(frame)
+        if ball_bbox:
+            x1, y1, x2, y2 = ball_bbox
+            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 140, 255), 2)
+            cv2.putText(frame, "Bola", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 140, 255), 2)
+
+        if ball_center:
+            ball_track.append(ball_center)
+            # Desenhar a trilha da bola
+            for i in range(1, len(ball_track)):
+                if ball_track[i - 1] is None or ball_track[i] is None:
+                    continue
+                cv2.line(frame, ball_track[i - 1], ball_track[i], (0, 140, 255), 2)
 
         # 1. DETECÇÃO E EXTRAÇÃO DE FEATURES
         results = model(frame, verbose=False)[0]
@@ -211,8 +265,13 @@ def main():
 
             # Reativar trackers
             detections_to_remove_from_reid = set()
+            matches_to_process = []
+
             for r, c in zip(row_ind, col_ind):
                 if reid_cost_matrix[r, c] < 0.9: # Um limiar de custo combinado
+                    matches_to_process.append((r, c))
+
+            for r, c in sorted(matches_to_process, key=lambda x: -x[0]):
                     lost_tracker = lost_trackers.pop(r)
                     original_detection_idx = list(unmatched_detections_idx)[c]
 
@@ -239,6 +298,43 @@ def main():
                 available_ids.add(tracker.id) # Devolve o ID ao pool
         lost_trackers = lost_to_keep
 
+        if ball_bbox:
+            # Bola visível
+            last_ball_bbox = ball_bbox
+            ball_missing_counter = 0
+            cup_with_ball_id = None  # Reset se a bola reapareceu
+        else:
+            # Bola sumida
+            ball_missing_counter += 1
+
+            if last_ball_bbox and ball_missing_counter == MAX_MISSING_FRAMES:
+                # Só tenta atribuir depois de N frames sumida
+                bx, by, bw, bh = last_ball_bbox[0], last_ball_bbox[1], last_ball_bbox[2] - last_ball_bbox[0], last_ball_bbox[3] - last_ball_bbox[1]
+                ball_rect = [bx, by, bx + bw, by + bh]
+                best_tracker_id = None
+                best_intersection = 0
+
+                for tracker in active_trackers:
+                    cx1, cy1, cx2, cy2 = tracker.bbox
+                    cup_rect = [int(cx1), int(cy1), int(cx2), int(cy2)]
+
+                    x_left = max(ball_rect[0], cup_rect[0])
+                    y_top = max(ball_rect[1], cup_rect[1])
+                    x_right = min(ball_rect[2], cup_rect[2])
+                    y_bottom = min(ball_rect[3], cup_rect[3])
+
+                    if x_right < x_left or y_bottom < y_top:
+                        continue
+
+                    intersection_area = (x_right - x_left) * (y_bottom - y_top)
+                    if intersection_area > best_intersection:
+                        best_intersection = intersection_area
+                        best_tracker_id = tracker.id
+
+                if best_tracker_id is not None and best_intersection / (bw * bh) > 0.5:
+                    cup_with_ball_id = best_tracker_id
+
+
         # 7. VISUALIZAÇÃO
         for tracker in active_trackers:
             # ... (código de visualização igual ao anterior) ...
@@ -246,7 +342,12 @@ def main():
             if tracker.time_since_update == 0:
                 x1, y1, x2, y2 = map(int, tracker.bbox)
                 cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-                cv2.putText(frame, f"Copo {tracker.id}", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+
+                label = f"Copo {tracker.id}"
+                if tracker.id == cup_with_ball_id:
+                    cv2.arrowedLine(frame, (x1, y1 - 20), (x1, y1 - 2), color=(0, 0, 255), thickness=3)
+                cv2.putText(frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+                                
             for i in range(1, len(tracker.history)):
                 cv2.line(frame, tracker.history[i-1], tracker.history[i], color, 2)
 

@@ -98,6 +98,8 @@ while cap.isOpened():
     # Roda o tracker interno do YOLO
     result = model.track(frame, persist=True, classes=[CUP_YOLO_ID], tracker="custom_tracker.yml", verbose=False)[0]
 
+    cv2.waitKey(15)
+
     current_yolo_ids = set()
     current_yolo_id_positions = {}
     current_yolo_id_boxes = {}
