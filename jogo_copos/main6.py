@@ -17,8 +17,8 @@ CUP_YOLO_ID = 41
 model = YOLO("yolo11n.pt")
 
 # Abre o vídeo de entrada
-# INPUT_VIDEO = "video1.mp4"
-INPUT_VIDEO = 0
+INPUT_VIDEO = "video1.mp4"
+# INPUT_VIDEO = 0
 OUTPUT_VIDEO = f"output_v6_camera.mp4"
 
 cap = cv2.VideoCapture(INPUT_VIDEO)

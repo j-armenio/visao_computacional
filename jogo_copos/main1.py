@@ -2,7 +2,6 @@ from collections import defaultdict, deque
 from ultralytics import YOLO
 from cvzone.ColorModule import ColorFinder
 import cvzone
-import random
 import cv2
 import numpy as np
 import os
@@ -29,8 +28,14 @@ model = YOLO("yolo11n.pt")
 
 # configuração do detector de cor para bola
 myColorFinder = ColorFinder(False)
-hsvVals = { 'hmin': 20, 'smin': 100, 'vmin': 100, 'hmax': 35, 'smax': 255, 'vmax': 255 } # amarelo/alaranjado
-
+hsvVals = {
+    'hmin': 10,
+    'smin': 160,
+    'vmin': 150,
+    'hmax': 22,
+    'smax': 255,
+    'vmax': 255
+}
 INPUT_VIDEO = 0
 OUTPUT_VIDEO = f"output_v6_camera.mp4"
 
@@ -39,7 +44,7 @@ opt = input("Selecione fonte do vídeo: \n1 - Câmera em tempo real \n2 - Vídeo
 if opt == "1":
     INPUT_VIDEO = 0
 elif opt == "2":
-    INPUT_VIDEO = "media/cup_shuffle3.mp4"
+    INPUT_VIDEO = "video1.mp4"
     if not os.path.exists(INPUT_VIDEO):
         print("Erro: video nao encontrado")
         exit(1)
@@ -82,6 +87,7 @@ ball_track_history = deque(maxlen=TRACK_HISTORY_LEN)
 # marca se o copo esta com a bola
 cup_has_ball = {0: False, 1: False, 2: False}
 last_ball_pos = None
+last_ball_bbox = {}
 
 # Loop através dos quadros do vídeo
 while cap.isOpened():
@@ -94,6 +100,7 @@ while cap.isOpened():
 
     current_yolo_ids = set()
     current_yolo_id_positions = {}
+    current_yolo_id_boxes = {}
 
     if result.boxes and result.boxes.is_track:
         boxes = result.boxes.xywh.cpu().numpy()
@@ -101,6 +108,7 @@ while cap.isOpened():
         current_yolo_ids = set(yolo_ids)
         for box, yolo_id in zip(boxes, yolo_ids):
             current_yolo_id_positions[yolo_id] = (box[0], box[1])
+            current_yolo_id_boxes[yolo_id] = (box[0], box[1], box[2], box[3])
 
     # ===== TRACKING DA BOLA =====
 
@@ -114,6 +122,7 @@ while cap.isOpened():
         x, y, w, h = contours[0]['bbox']
         ball_pos = (center_x, center_y)
         last_ball_pos = ball_pos # guarda ultima posição conhecida da bola
+        last_ball_bbox = (x, y, w, h)
 
         ball_track_history.append(ball_pos)
 
@@ -130,19 +139,38 @@ while cap.isOpened():
             points = np.array(ball_track_history, dtype=np.int32).reshape((-1, 1, 2))
             cv2.polylines(frame, [points], isClosed=False, color=ball_color, thickness=2)
     else:
-        # bola não foi detectada -> verifica se está sob algum copo
-        if last_ball_pos:
-            ball_x, ball_y = last_ball_pos
+        # bola desaparecida
+        if last_ball_bbox:
+            bx, by, bw, bh = last_ball_bbox
+            ball_rect = [bx, by, bx + bw, by + bh]
+            best_display_id = None
+            best_intersection = 0
 
             for display_id, yolo_id in display_id_to_yolo_id.items():
                 if yolo_id in current_yolo_id_positions:
-                    cup_x, cup_y = current_yolo_id_positions[yolo_id]
-                
-                    # verifica se a bola está proxima
-                    dist = np.linalg.norm(np.array((cup_x, cup_y)) - np.array((ball_x, ball_y)))
+                    cx, cy, cw, ch = current_yolo_id_boxes[yolo_id]
+                    cup_rect = [int(cx - cw / 2), int(cy - ch / 2), int(cx + cw / 2), int(cy + ch / 2)]
 
-                    if dist < 60:
-                        cup_has_ball[display_id] = True
+                    # Calcula interseção
+                    x_left = max(ball_rect[0], cup_rect[0])
+                    y_top = max(ball_rect[1], cup_rect[1])
+                    x_right = min(ball_rect[2], cup_rect[2])
+                    y_bottom = min(ball_rect[3], cup_rect[3])
+
+                    if x_right < x_left or y_bottom < y_top:
+                        continue
+
+                    intersection_area = (x_right - x_left) * (y_bottom - y_top)
+                    if intersection_area > best_intersection:
+                        best_intersection = intersection_area
+                        best_display_id = display_id
+
+            # Marca somente o melhor copo
+            for k in cup_has_ball:
+                cup_has_ball[k] = False
+            if best_display_id is not None and best_intersection / (bw * bh) > 0.5:
+                cup_has_ball[best_display_id] = True
+
 
     # ===== LÓGICA DE MAPEAMENTO E Re-ID =====
 

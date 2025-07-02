@@ -100,7 +100,7 @@ class KalmanTracker:
 
         # Estado inicial (x)
         # Extrai o centroide do bbox inicial
-        self.kf.x[:2] = self.get_centroid(bbox).reshape((2, 1))
+        self.kf.x[:2] = self.bbox_to_centroid(bbox).reshape((2, 1))
 
         self.bbox = bbox
         self.time_since_update = 0
