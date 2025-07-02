@@ -18,10 +18,16 @@ HISTORY_LENGTH = 50
 FIXED_NUM_CUPS = 3
 
 # Parâmetros de ciclo de vida e Re-ID
-MAX_AGE = 5                # Quadros para um tracker ativo ser considerado "perdido"
-MAX_LOST_AGE = 60           # Quadros para um tracker perdido ser permanentemente excluído
-REID_COLOR_THRESHOLD = 0.7  # Limiar de similaridade de histograma (1.0 = idêntico)
-REID_DISTANCE_THRESHOLD = 150 # Distância máxima em pixels para considerar uma re-identificação
+MAX_AGE = 15
+MAX_LOST_AGE = 60
+REID_COST_THRESHOLD = 0.8  # Limiar de custo combinado para aceitar uma Re-ID
+
+## PESOS PARA A FUNÇÃO DE CUSTO HÍBRIDA
+REID_DISTANCE_WEIGHT = 0.5
+REID_COLOR_WEIGHT = 0.45
+REID_MOTION_WEIGHT = 0.05
+
+MAX_MISSING_FRAMES = 8 # Para detectar a bola
 
 # Parâmetros para reconhecer a bola
 LOWER_ORANGE = np.array([10, 160, 150])
@@ -41,8 +47,8 @@ def detect_ball(frame):
             return (x, y, x + w, y + h), (cx, cy)
     return None, None
 
+# Calcula a IoU entre dois conjuntos de bounding boxes
 def iou_batch(bboxes1, bboxes2):
-    """Calcula a IoU entre dois conjuntos de bounding boxes."""
     area1 = (bboxes1[:, 2] - bboxes1[:, 0]) * (bboxes1[:, 3] - bboxes1[:, 1])
     area2 = (bboxes2[:, 2] - bboxes2[:, 0]) * (bboxes2[:, 3] - bboxes2[:, 1])
 
@@ -59,8 +65,8 @@ def iou_batch(bboxes1, bboxes2):
     iou = inter_area / (union_area + 1e-6)
     return iou
 
+# Calcula o histograma de matiz (Hue) normalizado para a região do bbox
 def get_color_histogram(frame, bbox):
-    """Calcula o histograma de matiz (Hue) normalizado para a região do bbox."""
     x1, y1, x2, y2 = map(int, bbox)
     # Garante que as coordenadas não saiam dos limites do frame
     x1, y1 = max(0, x1), max(0, y1)
@@ -76,16 +82,25 @@ def get_color_histogram(frame, bbox):
     cv2.normalize(hist, hist, alpha=0, beta=1, norm_type=cv2.NORM_MINMAX)
     return hist.flatten()
 
+# Calcula o vetor de velocidade média dos últimos num_points da trajetória.
+def calculate_average_velocity(history, num_points=5):
+    if len(history) < 2:
+        return np.array([0, 0])
+    
+    points_to_consider = min(len(history), num_points)
+    recent_history = list(history)[-points_to_consider:]
+    
+    velocities = [np.array(recent_history[i]) - np.array(recent_history[i-1]) for i in range(1, len(recent_history))]
+
+    if velocities:
+        return np.mean(velocities, axis=0)
+    
+    return np.array([0, 0])
+
 class KalmanTracker:
     def __init__(self, bbox, track_id, initial_hist):
         self.id = track_id
         self.kf = KalmanFilter(dim_x=4, dim_z=2)
-        # ... (configuração do Kalman igual à anterior) ...
-        self.kf.F = np.array([[1,0,1,0],[0,1,0,1],[0,0,1,0],[0,0,0,1]])
-        self.kf.H = np.array([[1,0,0,0],[0,1,0,0]])
-        self.kf.R *= 10.
-        self.kf.P[2:,2:] *= 1000.
-        self.kf.Q[2:,2:] *= 0.01
 
         # Matriz de Transição de Estado (F)
         # Descreve como o estado evolui de t-1 para t sem controle externo
@@ -125,18 +140,21 @@ class KalmanTracker:
         self.kf.x[:2] = self.bbox_to_centroid(bbox).reshape((2, 1))
 
         self.bbox = bbox
-        self.time_since_update = 0
+        self.time_since_update = 0 # Para saber se deve ser considerado lost
         self.hits = 1
         self.age = 0
-        self.history = deque(maxlen=HISTORY_LENGTH)
-        self.histogram = initial_hist # ### NOVO ###: Armazena a assinatura de cor
-        self.lost_age = 0 # ### NOVO ###: Contador para quando o tracker está na lista de perdidos
+        self.history = deque(maxlen=HISTORY_LENGTH) # Calcular velocidade média
+        self.histogram = initial_hist # Histograma de cores
+        self.lost_age = 0 # Tempo maximo perdido
 
-    # ... (métodos bbox_to_centroid e predict iguais) ...
     @staticmethod
-    def bbox_to_centroid(bbox): return np.array([(bbox[0] + bbox[2]) / 2.0, (bbox[1] + bbox[3]) / 2.0])
+    def bbox_to_centroid(bbox):
+        return np.array([(bbox[0] + bbox[2]) / 2.0, (bbox[1] + bbox[3]) / 2.0])
+    
     def predict(self):
-        self.kf.predict(); self.age += 1; self.time_since_update += 1
+        self.kf.predict()
+        self.age += 1
+        self.time_since_update += 1
         predicted_centroid = self.kf.x[:2].flatten()
         w = self.bbox[2] - self.bbox[0]; h = self.bbox[3] - self.bbox[1]
         return np.array([predicted_centroid[0] - w/2, predicted_centroid[1] - h/2, predicted_centroid[0] + w/2, predicted_centroid[1] + h/2])
@@ -179,36 +197,24 @@ def main():
     out = cv2.VideoWriter(VIDEO_OUTPUT, fourcc, fps, (width, height))
 
     active_trackers = []
-    lost_trackers = [] # ### NOVO ###: Lista para trackers perdidos
+    lost_trackers = []
     available_ids = set(range(FIXED_NUM_CUPS)) # Pool de IDs
     colors = [tuple(np.random.randint(0, 255, 3).tolist()) for _ in range(100)]
 
     ball_track = deque(maxlen=10)
     ball_missing_counter = 0
-    MAX_MISSING_FRAMES = 8
     last_ball_bbox = None
     cup_with_ball_id = None
 
     while cap.isOpened():
         ret, frame = cap.read()
-        if not ret: break
+        if not ret:
+            break
 
         cv2.waitKey(15)
 
-        # SEGMENTAÇÃO DA BOLA
+        # 0. SEGMENTAÇÃO DA BOLA
         ball_bbox, ball_center = detect_ball(frame)
-        if ball_bbox:
-            x1, y1, x2, y2 = ball_bbox
-            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 140, 255), 2)
-            cv2.putText(frame, "Bola", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 140, 255), 2)
-
-        if ball_center:
-            ball_track.append(ball_center)
-            # Desenhar a trilha da bola
-            for i in range(1, len(ball_track)):
-                if ball_track[i - 1] is None or ball_track[i] is None:
-                    continue
-                cv2.line(frame, ball_track[i - 1], ball_track[i], (0, 140, 255), 2)
 
         # 1. DETECÇÃO E EXTRAÇÃO DE FEATURES
         results = model(frame, verbose=False)[0]
@@ -243,43 +249,59 @@ def main():
 
         # 4. ASSOCIAÇÃO SECUNDÁRIA (Re-ID com trackers perdidos)
         unmatched_detections_idx = set(range(len(detections_bboxes))) - matched_detections_idx
-        reid_detections_bboxes = detections_bboxes[list(unmatched_detections_idx)]
-        reid_detections_hists = detections_hists[list(unmatched_detections_idx)]
 
-        if len(lost_trackers) > 0 and len(reid_detections_bboxes) > 0:
+        if len(lost_trackers) > 0 and len(unmatched_detections_idx) > 0:
+            reid_detections_bboxes = detections_bboxes[list(unmatched_detections_idx)]
+            reid_detections_hists = detections_hists[list(unmatched_detections_idx)]
+
             # Construir matriz de custo para Re-ID
             reid_cost_matrix = np.ones((len(lost_trackers), len(reid_detections_bboxes)))
             for i, tracker in enumerate(lost_trackers):
+                hist_velocity = calculate_average_velocity(tracker.history)
+                last_pos = tracker.bbox_to_centroid(tracker.bbox)
+                
                 for j, hist in enumerate(reid_detections_hists):
+                     # --- Custo de Aparência (Cor) ---
                     hist_sim = cv2.compareHist(tracker.histogram, hist, cv2.HISTCMP_CORREL)
-                    dist = np.linalg.norm(tracker.bbox_to_centroid(tracker.bbox) - tracker.bbox_to_centroid(reid_detections_bboxes[j]))
+                    cost_color = 1 - hist_sim
 
-                    # Se a detecção estiver muito longe OU a cor for muito diferente, o custo é alto (ignora)
-                    if dist > REID_DISTANCE_THRESHOLD or hist_sim < REID_COLOR_THRESHOLD:
-                        reid_cost_matrix[i,j] = 1.0
+                    # --- Custo de Posição (Distância) ---
+                    new_pos = KalmanTracker.bbox_to_centroid(reid_detections_bboxes[j])
+                    dist = np.linalg.norm(last_pos - new_pos)
+                    cost_dist = dist / (width / 4) # Normaliza pela largura do frame
+
+                    # --- Custo de Movimento (Direção) ---
+                    reid_vector = new_pos - last_pos
+                    norm_hist_v = np.linalg.norm(hist_velocity)
+                    norm_reid_v = np.linalg.norm(reid_vector)
+                    if norm_hist_v > 0 and norm_reid_v > 0:
+                        cosine_sim = np.dot(hist_velocity, reid_vector) / (norm_hist_v * norm_reid_v)
+                        cost_motion = (1 - cosine_sim) / 2 # Custo é 0 para mesma direção, 1 para 90 graus ou mais
                     else:
-                        # Custo é uma combinação de (1 - similaridade_cor) e (distancia_normalizada)
-                        reid_cost_matrix[i,j] = (1 - hist_sim) + (dist / REID_DISTANCE_THRESHOLD)
+                        cost_motion = 1.0 
+
+                    total_cost = (REID_DISTANCE_WEIGHT * cost_dist) + (REID_COLOR_WEIGHT * cost_color) + (REID_MOTION_WEIGHT * cost_motion)
+                    reid_cost_matrix[i, j] = total_cost
 
             row_ind, col_ind = linear_sum_assignment(reid_cost_matrix)
 
             # Reativar trackers
-            detections_to_remove_from_reid = set()
-            matches_to_process = []
+            detections_reidentified_idx = set()
+            lost_trackers_to_remove_indices = set()
 
             for r, c in zip(row_ind, col_ind):
-                if reid_cost_matrix[r, c] < 0.9: # Um limiar de custo combinado
-                    matches_to_process.append((r, c))
-
-            for r, c in sorted(matches_to_process, key=lambda x: -x[0]):
-                    lost_tracker = lost_trackers.pop(r)
+                if reid_cost_matrix[r, c] < REID_COST_THRESHOLD:
+                    lost_tracker = lost_trackers[r]
                     original_detection_idx = list(unmatched_detections_idx)[c]
-
+                    
                     lost_tracker.update(detections_bboxes[original_detection_idx], detections_hists[original_detection_idx])
                     active_trackers.append(lost_tracker)
-                    detections_to_remove_from_reid.add(original_detection_idx)
-
-            unmatched_detections_idx -= detections_to_remove_from_reid
+                    
+                    detections_reidentified_idx.add(original_detection_idx)
+                    lost_trackers_to_remove_indices.add(r)
+            
+            lost_trackers = [t for i, t in enumerate(lost_trackers) if i not in lost_trackers_to_remove_indices]
+            unmatched_detections_idx -= detections_reidentified_idx
 
         # 5. CRIAR TRACKERS VERDADEIRAMENTE NOVOS
         for idx in unmatched_detections_idx:
@@ -298,6 +320,7 @@ def main():
                 available_ids.add(tracker.id) # Devolve o ID ao pool
         lost_trackers = lost_to_keep
 
+        # 7. ASSOCIAR BOLA COM ALGUM COPO VISIVEL
         if ball_bbox:
             # Bola visível
             last_ball_bbox = ball_bbox
@@ -325,7 +348,8 @@ def main():
 
                     if x_right < x_left or y_bottom < y_top:
                         continue
-
+                    
+                    # Achar copo com maior interseção com a bounding box da bola
                     intersection_area = (x_right - x_left) * (y_bottom - y_top)
                     if intersection_area > best_intersection:
                         best_intersection = intersection_area
@@ -335,9 +359,21 @@ def main():
                     cup_with_ball_id = best_tracker_id
 
 
-        # 7. VISUALIZAÇÃO
+        # 8. VISUALIZAÇÃO
+        if ball_bbox:
+            x1, y1, x2, y2 = ball_bbox
+            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 140, 255), 2)
+            cv2.putText(frame, "Bola", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 140, 255), 2)
+
+        if ball_center:
+            ball_track.append(ball_center)
+            # Desenhar a trilha da bola
+            for i in range(1, len(ball_track)):
+                if ball_track[i - 1] is None or ball_track[i] is None:
+                    continue
+                cv2.line(frame, ball_track[i - 1], ball_track[i], (0, 140, 255), 2)
+
         for tracker in active_trackers:
-            # ... (código de visualização igual ao anterior) ...
             color = colors[tracker.id % len(colors)]
             if tracker.time_since_update == 0:
                 x1, y1, x2, y2 = map(int, tracker.bbox)
@@ -353,7 +389,8 @@ def main():
 
         cv2.imshow("Jogo dos copos", frame)
         out.write(frame)
-        if cv2.waitKey(1) & 0xFF == ord('q'): break
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
 
     cap.release()
     cv2.destroyAllWindows()
